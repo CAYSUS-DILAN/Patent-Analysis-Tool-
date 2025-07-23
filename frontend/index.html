@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Patent Analysis Tool</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <style>
+        .progress-container {
+            width: 100%;
+            background-color: #f3f3f3;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        #progress-bar {
+            height: 20px;
+            background-color: #4CAF50;
+            border-radius: 5px;
+            width: 0%;
+        }
+        #progress-text {
+            text-align: center;
+        }
+        .error-message {
+            color: red;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Patent Analysis Tool</h1>
+        <div class="card">
+            <div class="file-input-container">
+                <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
+                <label for="fileInput" class="file-label"><br>
+                    <span id="file-label-text">Choose CSV or Excel File</span>
+                </label>
+                <small class="file-info">Supported formats: CSV, Excel (.xlsx, .xls)</small>
+            </div>
+            <input type="text" id="keywordInput" placeholder="Enter keywords (comma separated)">
+            <div class="btn-group center-align">
+                <button id="uploadBtn">Start Processing</button>
+                <button id="pauseBtn" style="display: none;">Pause</button>
+                <button id="resumeBtn" style="display: none;">Resume</button>
+            </div>
+        </div>
+        <div class="progress-container" style="display: none;">
+            <div id="progress-bar"></div>
+            <p id="progress-text">0% (0/0 URLs processed)</p>
+        </div>
+        <div id="error-container" style="display: none;" class="error-message">
+            <p id="error-text"></p>
+        </div>
+        <button id="viewResultsBtn" class="back-btn" style="display: none;">View Results</button>
+        <button id="downloadBtn" class="back-btn" style="display: none;">Download Results</button>
+        <button id="logoutBtn" class="back-btn">Log Out</button>
+    </div>
+    <script>
+        const socket = io();
+        let currentKeywords = [];
+        let isProcessing = false;
+        const fileInput = document.getElementById('fileInput');
+        const keywordInput = document.getElementById('keywordInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const pauseBtn = document.getElementById('pauseBtn');
+        const resumeBtn = document.getElementById('resumeBtn');
+        const progressContainer = document.querySelector('.progress-container');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const errorContainer = document.getElementById('error-container');
+        const errorText = document.getElementById('error-text');
+        const viewResultsBtn = document.getElementById('viewResultsBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const fileLabelText = document.getElementById('file-label-text');
+
+        window.onload = function() {
+            localStorage.removeItem('keywords');
+            localStorage.removeItem('selectedFileName');
+            keywordInput.value = '';
+            fileLabelText.textContent = 'Choose CSV or Excel File';
+        };
+
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                fileLabelText.textContent = file.name;
+                localStorage.setItem('selectedFileName', file.name);
+            } else {
+                fileLabelText.textContent = 'Choose CSV or Excel File';
+                localStorage.removeItem('selectedFileName');
+            }
+        });
+
+        uploadBtn.addEventListener('click', function() {
+            const file = fileInput.files[0];
+            const keywords = keywordInput.value.trim();
+            if (!file) {
+                showError('Please select a file');
+                return;
+            }
+            if (!keywords) {
+                showError('Please enter keywords');
+                return;
+            }
+            const allowedTypes = ['.csv', '.xlsx', '.xls'];
+            const fileExt = '.' + file.name.split('.').pop().toLowerCase();
+            if (!allowedTypes.includes(fileExt)) {
+                showError('Please upload a CSV or Excel file');
+                return;
+            }
+            currentKeywords = keywords.split(',').map(k => k.trim()).filter(k => k);
+            localStorage.setItem('keywords', keywords);
+            startProcessing(file, keywords);
+        });
+
+        pauseBtn.addEventListener('click', function() {
+            socket.emit('pause');
+        });
+
+        resumeBtn.addEventListener('click', function() {
+            socket.emit('resume');
+        });
+
+        viewResultsBtn.addEventListener('click', function() {
+            window.location.href = 'result.html';
+        });
+
+        downloadBtn.addEventListener('click', function() {
+            fetch('/download_results', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ keywords: currentKeywords })
+            })
+            .then(response => response.blob())
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'results.zip';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            })
+            .catch(error => {
+                console.error('Download error:', error);
+                showError('Error downloading results');
+            });
+        });
+
+        logoutBtn.addEventListener('click', function() {
+            window.location.href = '/logout';
+        });
+
+        socket.on('update_progress', function(data) {
+            progressBar.style.width = data.progress + '%';
+            progressText.textContent = `${data.percentage} (${data.processed_urls}/${data.total_urls} URLs processed)`;
+        });
+
+        socket.on('processing_ended', function() {
+            isProcessing = false;
+            uploadBtn.disabled = false;
+            uploadBtn.style.display = 'inline-block'; // Show again after finished
+            pauseBtn.style.display = 'none';
+            resumeBtn.style.display = 'none';
+            progressText.textContent = 'Processing completed!';
+            viewResultsBtn.style.display = 'inline-block';
+            downloadBtn.style.display = 'inline-block';
+            hideError();
+        });
+
+        socket.on('processing_error', function(data) {
+            isProcessing = false;
+            uploadBtn.disabled = false;
+            uploadBtn.style.display = 'inline-block'; // Show again if error
+            pauseBtn.style.display = 'none';
+            progressContainer.style.display = 'none';
+            showError(data.error);
+        });
+
+        socket.on('pause_acknowledged', function() {
+            pauseBtn.style.display = 'none';
+            resumeBtn.style.display = 'inline-block';
+        });
+
+        socket.on('resume_acknowledged', function() {
+            resumeBtn.style.display = 'none';
+            pauseBtn.style.display = 'inline-block';
+        });
+
+        function startProcessing(file, keywords) {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('keywords', keywords);
+            isProcessing = true;
+            uploadBtn.disabled = true;
+            uploadBtn.style.display = 'none'; // Hide start button when process begins
+            pauseBtn.style.display = 'inline-block';
+            resumeBtn.style.display = 'none';
+            progressContainer.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressText.textContent = '0% (0/0 URLs processed)';
+            viewResultsBtn.style.display = 'none';
+            downloadBtn.style.display = 'none';
+            hideError();
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    showError(data.error);
+                    isProcessing = false;
+                    uploadBtn.disabled = false;
+                    uploadBtn.style.display = 'inline-block'; // Show again if upload fails
+                    pauseBtn.style.display = 'none';
+                    progressContainer.style.display = 'none';
+                    return;
+                }
+                console.log('Processing started successfully');
+            })
+            .catch(error => {
+                console.error('Upload error:', error);
+                showError('Error starting processing');
+                isProcessing = false;
+                uploadBtn.disabled = false;
+                uploadBtn.style.display = 'inline-block'; // Show again on error
+                pauseBtn.style.display = 'none';
+                progressContainer.style.display = 'none';
+            });
+        }
+
+        function showError(message) {
+            errorText.textContent = message;
+            errorContainer.style.display = 'block';
+        }
+
+        function hideError() {
+            errorContainer.style.display = 'none';
+        }
+    </script>
+</body>
+</html>
