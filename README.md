@@ -1,7 +1,7 @@
      Patent Analysis Tool
     A comprehensive web application for analyzing patent documents with user authentication and admin dashboard functionality.
+   
     📋 Table of Contents
-
     Features
     Prerequisites
     Installation
